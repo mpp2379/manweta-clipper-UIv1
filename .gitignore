@@ -1,0 +1,28 @@
+# Env / secrets
+.env
+*.env
+!.env.example
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+
+# Runtime data (local disk storage — see README §6 for production storage)
+backend/static/uploads/*
+backend/static/outputs/*
+backend/static/tmp/*
+!backend/static/uploads/.gitkeep
+!backend/static/outputs/.gitkeep
+!backend/static/tmp/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
