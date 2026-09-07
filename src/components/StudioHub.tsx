@@ -471,7 +471,7 @@ export const StudioHub: React.FC<StudioHubProps> = ({
             <Film className="w-8 h-8 text-[#555555] mx-auto" />
             <h4 className="text-sm font-semibold text-white">No reels created yet</h4>
             <p className="text-xs text-[#777777] max-w-sm mx-auto">
-              Launch Clip Studio to upload a video or pick a sample podcast to generate your first viral clip.
+              Launch Clip Studio to upload a video or pick a sample clipper output to generate your first viral clip.
             </p>
             <button
               type="button"

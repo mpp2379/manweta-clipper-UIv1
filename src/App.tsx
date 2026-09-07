@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Sparkles, Layers } from 'lucide-react';
 import {
   ClipperJob,
   UserAccount,
@@ -663,25 +664,29 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  id="tab-clip-wizard-btn"
                   onClick={() => setCurrentTab('wizard')}
-                  className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all ${
+                  className={`px-4 py-2 rounded-2xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
                     currentTab === 'wizard'
                       ? 'bg-white text-black shadow-md'
                       : 'bg-[#141414] text-[#888888] hover:text-white border border-[#222222]'
                   }`}
                 >
-                  7-Step Clipper Pipeline
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>7-Step Clipper Pipeline</span>
                 </button>
                 <button
                   type="button"
+                  id="tab-clip-dashboard-btn"
                   onClick={() => setCurrentTab('dashboard')}
-                  className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all ${
+                  className={`px-4 py-2 rounded-2xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
                     currentTab === 'dashboard'
                       ? 'bg-white text-black shadow-md'
                       : 'bg-[#141414] text-[#888888] hover:text-white border border-[#222222]'
                   }`}
                 >
-                  Project Dashboard
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Project Dashboard</span>
                 </button>
               </div>
 
@@ -802,9 +807,9 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center gap-4 py-24 rounded-3xl bg-[#111111] border border-[#222222] text-center">
                       <div className="w-10 h-10 rounded-full border-2 border-[#00FF85] border-t-transparent animate-spin" />
                       <div>
-                        <p className="text-sm font-semibold text-white">Rendering your reel with ffmpeg...</p>
+                        <p className="text-sm font-semibold text-white">Creating your viral reel in high definition...</p>
                         <p className="text-xs text-[#888888] mt-1">
-                          Cropping, burning captions, and encoding on the server. Longer clips take a bit longer.
+                          Applying smart 9:16 crop, dynamic animated captions, and audio enhancement.
                         </p>
                       </div>
                     </div>
