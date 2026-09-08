@@ -63,45 +63,51 @@ export default function App() {
   const [pipelineError, setPipelineError] = useState<string | null>(null);
 
   // --- Active Job in Wizard ---
-  const [activeJob, setActiveJob] = useState<ClipperJob>(() => jobs[0] || {
-    id: 'job-init',
-    title: SAMPLE_VIDEOS[0].title,
-    sourceType: 'youtube',
-    sourceUrl: SAMPLE_VIDEOS[0].videoUrl,
-    fileSizeMb: 850,
-    durationSeconds: SAMPLE_VIDEOS[0].durationSec,
-    resolution: '1920x1080',
-    fps: 60,
-    thumbnailUrl: SAMPLE_VIDEOS[0].thumbnail,
-    status: 'queued',
-    currentStep: 1,
-    progressPercent: 0,
-    transcriptText: '',
-    words: [],
-    highlights: [],
-    customClipRange: [142, 187],
-    styleConfig: {
-      captionStyle: 'hormozi',
-      aspectRatio: '9:16',
-      framing: 'smart_speaker',
-      fontSize: 'lg',
-      fontFamily: 'display',
-      textColor: '#FFFFFF',
-      highlightColor: '#FACC15',
-      showEmojis: true,
-      position: 'middle',
-      musicTrack: 'lo-fi-beats',
-      musicVolume: 18,
-      showBrandLogo: true,
-      brandName: '@manweta.ai',
-      autoReOffsetTimestamps: true,
-    },
-    createdAt: new Date().toISOString(),
-    syncState: 'synced',
-    backendLogs: []
+  const [activeJob, setActiveJob] = useState<ClipperJob>(() => {
+    const stepOneJob = jobs.find(j => j.currentStep === 1 && j.status !== 'done');
+    if (stepOneJob) return stepOneJob;
+
+    return {
+      id: 'job_' + Date.now().toString(36),
+      title: 'New Podcast Ingest',
+      sourceType: 'sample',
+      sourceUrl: SAMPLE_VIDEOS[0].videoUrl,
+      sourceFileName: 'podcast_stream.mp4',
+      fileSizeMb: 650,
+      durationSeconds: SAMPLE_VIDEOS[0].durationSec,
+      resolution: '1920x1080',
+      fps: 60,
+      thumbnailUrl: SAMPLE_VIDEOS[0].thumbnail,
+      status: 'queued',
+      currentStep: 1,
+      progressPercent: 0,
+      transcriptText: '',
+      words: [],
+      highlights: [],
+      customClipRange: [142, 187],
+      styleConfig: {
+        captionStyle: 'hormozi',
+        aspectRatio: '9:16',
+        framing: 'smart_speaker',
+        fontSize: 'lg',
+        fontFamily: 'display',
+        textColor: '#FFFFFF',
+        highlightColor: '#FACC15',
+        showEmojis: true,
+        position: 'middle',
+        musicTrack: 'lo-fi-beats',
+        musicVolume: 18,
+        showBrandLogo: true,
+        brandName: '@manweta.ai',
+        autoReOffsetTimestamps: true,
+      },
+      createdAt: new Date().toISOString(),
+      syncState: 'synced',
+      backendLogs: []
+    };
   });
 
-  const [maxAccessibleStep, setMaxAccessibleStep] = useState<PipelineStepNumber>(activeJob.currentStep || 1);
+  const [maxAccessibleStep, setMaxAccessibleStep] = useState<PipelineStepNumber>(1);
 
   // --- Modals ---
   const [isBackendInspectorOpen, setIsBackendInspectorOpen] = useState(false);
@@ -253,6 +259,18 @@ export default function App() {
     setMaxAccessibleStep(job.currentStep || 1);
     setCurrentPage('clipper');
     setCurrentTab('wizard');
+  };
+
+  // Navigating to Clip Studio guarantees step 1 (upload/ingest) is opened
+  const handleOpenClipStudio = () => {
+    setCurrentPage('clipper');
+    setCurrentTab('wizard');
+    if (activeJob.status === 'done' || activeJob.currentStep === 7) {
+      handleStartNewClip();
+    } else {
+      updateActiveJob({ currentStep: 1 });
+      setMaxAccessibleStep(prev => Math.max(prev, 1) as PipelineStepNumber);
+    }
   };
 
   // --- Step 1 Handlers ---
@@ -577,6 +595,7 @@ export default function App() {
         onOpenAuth={() => setIsAuthOpen(true)}
         onGoogleSignIn={handleGoogleSignIn}
         onStartNewClip={handleStartNewClip}
+        onOpenClipStudio={handleOpenClipStudio}
         onSignOut={handleSignOut}
       />
 
@@ -599,10 +618,7 @@ export default function App() {
             onLoginClick={() => setIsAuthOpen(true)}
             onGoogleSignIn={handleGoogleSignIn}
             onEnterStudioHub={() => setCurrentPage('studios')}
-            onLaunchClipStudio={() => {
-              setCurrentPage('clipper');
-              setCurrentTab('wizard');
-            }}
+            onLaunchClipStudio={handleOpenClipStudio}
             onNavigatePricing={() => setCurrentPage('pricing')}
             isLoggedIn={isLoggedIn}
             user={user}
@@ -616,10 +632,7 @@ export default function App() {
             user={user}
             isLoggedIn={isLoggedIn}
             savedJobs={jobs}
-            onLaunchClipStudio={() => {
-              setCurrentPage('clipper');
-              setCurrentTab('wizard');
-            }}
+            onLaunchClipStudio={handleOpenClipStudio}
             onSelectExistingJob={handleOpenExistingJob}
             onOpenCheckout={() => setIsCheckoutOpen(true)}
             onOpenAuth={() => setIsAuthOpen(true)}
@@ -634,10 +647,7 @@ export default function App() {
             user={user}
             onOpenCheckout={() => setIsCheckoutOpen(true)}
             onOpenAuth={() => setIsAuthOpen(true)}
-            onLaunchClipper={() => {
-              setCurrentPage('clipper');
-              setCurrentTab('wizard');
-            }}
+            onLaunchClipper={handleOpenClipStudio}
             theme={theme}
           />
         )}
@@ -648,10 +658,7 @@ export default function App() {
             user={user}
             onOpenCheckout={() => setIsCheckoutOpen(true)}
             onOpenAuth={() => setIsAuthOpen(true)}
-            onLaunchClipper={() => {
-              setCurrentPage('clipper');
-              setCurrentTab('wizard');
-            }}
+            onLaunchClipper={handleOpenClipStudio}
             theme={theme}
           />
         )}

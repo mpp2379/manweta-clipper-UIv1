@@ -163,46 +163,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </button>
             ) : (
-              <>
-                {/* Google Sign-in Primary Button */}
-                <button
-                  type="button"
-                  id="hero-google-auth-btn"
-                  onClick={onGoogleSignIn}
-                  className="w-full sm:w-auto px-7 py-3.5 rounded-2xl bg-white hover:bg-neutral-200 text-black font-bold text-sm shadow-xl flex items-center justify-center gap-3 transition-all hover:scale-[1.02]"
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24">
-                    <path
-                      fill="#EA4335"
-                      d="M12 5c1.7 0 3 .6 4 1.5l3-3C17.2 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"
-                    />
-                    <path
-                      fill="#4285F4"
-                      d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15s.7 5.3 1.9 7.7l3.7-2.9z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2.4-6.4-5.2L1.9 16C3.7 19.7 7.5 23 12 23z"
-                    />
-                  </svg>
-                  <span>Sign In with Google — Get 60 Free Credits</span>
-                </button>
-
-                {/* Instant Try / Email Option */}
-                <button
-                  type="button"
-                  id="hero-quick-try-btn"
-                  onClick={onLaunchClipStudio}
-                  className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-[#161616] hover:bg-[#202020] border border-[#2E2E2E] text-white font-semibold text-sm transition-all flex items-center justify-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4 text-[#00FF85]" />
-                  <span>Start Creating Free</span>
-                </button>
-              </>
+              <button
+                type="button"
+                id="hero-google-auth-btn"
+                onClick={onLoginClick}
+                className="w-full sm:w-auto px-7 py-3.5 rounded-2xl bg-white hover:bg-neutral-200 text-black font-bold text-sm shadow-xl flex items-center justify-center gap-3 transition-all hover:scale-[1.02]"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path
+                    fill="#EA4335"
+                    d="M12 5c1.7 0 3 .6 4 1.5l3-3C17.2 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"
+                  />
+                  <path
+                    fill="#4285F4"
+                    d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15s.7 5.3 1.9 7.7l3.7-2.9z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2.4-6.4-5.2L1.9 16C3.7 19.7 7.5 23 12 23z"
+                  />
+                </svg>
+                <span>Sign In with Google</span>
+              </button>
             )}
           </div>
 
@@ -238,30 +224,61 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </p>
         </div>
 
-        {/* Studio Switcher Tabs */}
-        <div className="flex items-center justify-center gap-2 mb-10 overflow-x-auto pb-2">
-          {studios.map((studio) => {
-            const Icon = studio.icon;
-            const isActive = activeStudioTab === studio.id;
-            return (
-              <button
-                key={studio.id}
-                type="button"
-                onClick={() => setActiveStudioTab(studio.id as any)}
-                className={`px-4 py-2.5 rounded-2xl text-xs font-semibold flex items-center gap-2 transition-all whitespace-nowrap border ${
-                  isActive
-                    ? 'bg-white text-black border-white shadow-md'
-                    : 'bg-[#111111] text-[#888888] border-[#222222] hover:text-[#EDEDED] hover:bg-[#161616]'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-black' : 'text-[#00FF85]'}`} />
-                <span>{studio.title}</span>
-                <span className={`text-[9px] px-2 py-0.5 rounded-full border ${studio.badgeColor}`}>
-                  {studio.badge}
-                </span>
-              </button>
-            );
-          })}
+        {/* Studio Switcher Tabs Container: 2x2 Grid Layout */}
+        <div 
+          id="landing-studios-tabs-container"
+          className="max-w-2xl mx-auto mb-10"
+        >
+          <div
+            id="landing-studios-tabs-scroll-track"
+            className={`grid grid-cols-2 gap-2 sm:gap-2.5 p-1.5 rounded-2xl border transition-colors ${
+              theme === 'dark'
+                ? 'bg-[#101010] border-[#222222]'
+                : 'bg-neutral-100 border-neutral-200 shadow-inner'
+            }`}
+          >
+            {studios.map((studio) => {
+              const Icon = studio.icon;
+              const isActive = activeStudioTab === studio.id;
+              return (
+                <button
+                  key={studio.id}
+                  id={`landing-studio-tab-${studio.id}`}
+                  type="button"
+                  onClick={() => setActiveStudioTab(studio.id as any)}
+                  className={`p-2.5 sm:px-4 sm:py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all border text-left ${
+                    isActive
+                      ? theme === 'dark'
+                        ? 'bg-white text-black border-white shadow-md font-bold'
+                        : 'bg-black text-white border-black shadow-md font-bold'
+                      : theme === 'dark'
+                      ? 'bg-[#161616] text-[#888888] border-[#222222] hover:text-white hover:border-[#333333]'
+                      : 'bg-white text-neutral-600 border-neutral-200 hover:text-black hover:border-neutral-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+                    <Icon className={`w-4 h-4 shrink-0 ${
+                      isActive 
+                        ? theme === 'dark' ? 'text-black' : 'text-white' 
+                        : 'text-[#00FF85]'
+                    }`} />
+                    <span className="truncate">{studio.title}</span>
+                  </div>
+                  <span
+                    className={`text-[9px] px-2 py-0.5 rounded-full border shrink-0 font-medium ${
+                      isActive 
+                        ? theme === 'dark'
+                          ? 'border-black/20 bg-black/10 text-black'
+                          : 'border-white/20 bg-white/10 text-white'
+                        : studio.badgeColor
+                    }`}
+                  >
+                    {studio.badge}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Selected Studio Detailed Card */}

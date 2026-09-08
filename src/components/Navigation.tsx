@@ -32,6 +32,7 @@ interface NavigationProps {
   onOpenAuth: () => void;
   onGoogleSignIn: () => void;
   onStartNewClip: () => void;
+  onOpenClipStudio?: () => void;
   onSignOut?: () => void;
 }
 
@@ -53,6 +54,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   onOpenAuth,
   onGoogleSignIn,
   onStartNewClip,
+  onOpenClipStudio,
   onSignOut
 }) => {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -135,8 +137,12 @@ export const Navigation: React.FC<NavigationProps> = ({
             <button
               id="nav-tab-clip-studio"
               onClick={() => {
-                setCurrentPage('clipper');
-                setCurrentTab('wizard');
+                if (onOpenClipStudio) {
+                  onOpenClipStudio();
+                } else {
+                  setCurrentPage('clipper');
+                  setCurrentTab('wizard');
+                }
               }}
               className={`px-4 py-1.5 text-xs font-semibold rounded-full transition-all flex items-center gap-1.5 ${
                 currentPage === 'clipper'
