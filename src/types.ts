@@ -46,6 +46,7 @@ export interface StyleConfig {
   showBrandLogo: boolean;
   brandName: string;
   autoReOffsetTimestamps: boolean;
+  customFontSizePx?: number;
 }
 
 export interface BackendLog {
