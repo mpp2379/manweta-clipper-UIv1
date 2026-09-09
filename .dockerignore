@@ -1,0 +1,10 @@
+.git
+.env
+**/node_modules
+dist
+frontend/dist
+backend/static/uploads/*
+backend/static/outputs/*
+backend/static/tmp/*
+Dockerfile
+docker-compose.yml

@@ -296,7 +296,8 @@ export default function App() {
 
       const finished = await JobsApi.pollUntil(
         created.id,
-        (j) => j.status === 'awaiting_selection'
+        (j) => j.status === 'awaiting_selection',
+        { timeoutMs: 10 * 60 * 1000 }
       );
 
       if (finished.status === 'failed') {

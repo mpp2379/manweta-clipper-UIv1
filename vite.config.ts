@@ -73,9 +73,18 @@ function apiMockPlugin(): Plugin {
   };
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = { ...process.env, ...loadEnvVars(mode) };
+  const backendUrl = env.VITE_API_URL || 'http://127.0.0.1:5000';
+  const useMockFallback = env.VITE_ENABLE_MOCK_FALLBACK === 'true';
+
   return {
-    plugins: [react(), tailwindcss(), apiMockPlugin()],
+    // By default, dev-server requests to /auth, /api, and /media are proxied
+    // to the real FastAPI backend (see backend/README or root README §4,
+    // Option B) so real Google OAuth / Whisper / GPT / ffmpeg runs end-to-end.
+    // Set VITE_ENABLE_MOCK_FALLBACK=true to use in-browser mock responses
+    // instead (no backend required) for pure UI iteration.
+    plugins: [react(), tailwindcss(), ...(useMockFallback ? [apiMockPlugin()] : [])],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
@@ -87,6 +96,20 @@ export default defineConfig(() => {
       allowedHosts: true as const,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: useMockFallback
+        ? undefined
+        : {
+            '/auth': { target: backendUrl, changeOrigin: true },
+            '/api': { target: backendUrl, changeOrigin: true },
+            '/media': { target: backendUrl, changeOrigin: true },
+          },
     },
   };
 });
+
+function loadEnvVars(_mode: string): Record<string, string | undefined> {
+  // Vite's own `loadEnv` covers .env files; process.env already picks up
+  // shell-exported vars, which is sufficient here since we only read
+  // VITE_API_URL / VITE_ENABLE_MOCK_FALLBACK.
+  return {};
+}

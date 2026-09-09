@@ -1,0 +1,2021 @@
+diff --git a/.env.example b/.env.example
+index 073177e..f65ebf4 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,2 +1,19 @@
++# --- Frontend (Vite) ---
+ VITE_API_URL=
+-VITE_ENABLE_MOCK_FALLBACK=
+\ No newline at end of file
++VITE_ENABLE_MOCK_FALLBACK=
++
++# --- Backend core ---
++SECRET_KEY=
++DATABASE_URL=postgresql://postgres:postgres@localhost:5432/manweta_clipper
++APP_URL=http://127.0.0.1:5000
++FRONTEND_URL=http://localhost:3000
++COOKIE_SECURE=false
++MAX_UPLOAD_MB=500
++
++# --- OpenAI (Whisper transcription + GPT-4o-mini highlight scoring) ---
++OPENAI_API_KEY=
++
++# --- Google OAuth ---
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++GOOGLE_REDIRECT_URI=http://127.0.0.1:5000/auth/google/callback
+diff --git a/.gitignore b/.gitignore
+index 5e5f597..1a5e76d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,9 +4,9 @@
+ !.env.example
+ 
+ # Node
+-frontend/node_modules/
+-frontend/dist/
+-frontend/.vite/
++node_modules/
++dist/
++.vite/
+ 
+ # Python
+ backend/venv/
+diff --git a/Dockerfile b/Dockerfile
+new file mode 100644
+index 0000000..acc21e0
+--- /dev/null
++++ b/Dockerfile
+@@ -0,0 +1,28 @@
++# ---- Stage 1: build the React/Vite frontend -------------------------------
++FROM node:20-slim AS frontend-build
++WORKDIR /frontend
++COPY package.json ./
++RUN npm install
++COPY index.html vite.config.ts tsconfig.json metadata.json ./
++COPY src ./src
++RUN npm run build   # outputs to /frontend/dist
++
++# ---- Stage 2: Python backend + ffmpeg --------------------------------------
++FROM python:3.11-slim
++WORKDIR /srv
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    ffmpeg \
++    && rm -rf /var/lib/apt/lists/*
++
++COPY backend/requirements.txt ./backend/requirements.txt
++RUN pip install --no-cache-dir -r backend/requirements.txt
++
++COPY backend ./backend
++COPY --from=frontend-build /frontend/dist ./dist
++
++WORKDIR /srv/backend
++ENV PYTHONUNBUFFERED=1
++EXPOSE 5000
++
++CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-b", "0.0.0.0:5000", "app.main:app"]
+diff --git a/README.md b/README.md
+index 4e4d2c6..33137df 100644
+--- a/README.md
++++ b/README.md
+@@ -4,13 +4,15 @@ A "long video → viral vertical reels" app: upload a podcast/webinar, OpenAI Wh
+ transcribes it, GPT scores highlight-worthy moments, you pick one, and ffmpeg renders
+ a captioned 9:16/1:1/16:9 clip.
+ 
+-This repo combines two things you gave me:
++This repo combines two things:
+ 
+-- **`frontend/`** — your Google AI Studio–generated UI (`manwetaai-clipper-UI`), lightly
+-  modified to talk to a real backend instead of `localStorage` mock data.
+-- **`backend/`** — a new Flask API, built by copying the auth/DB/OpenAI patterns from
+-  your `Manweta AI` project (Postgres + JWT cookies + Google OAuth), extended with the
+-  clipper-specific pipeline (Whisper transcription, GPT highlight scoring, ffmpeg render).
++- **root (`src/`, `index.html`, `vite.config.ts`, …)** — the React/Vite frontend
++  (`manwetaai-clipper-UI`), talking to a real backend via `src/services/api.ts`
++  instead of the `localStorage` mock data in `src/services/mockData.ts`.
++- **`backend/`** — a FastAPI API: Google OAuth + JWT cookies backed by Postgres
++  sessions, plus the clipper-specific pipeline (Whisper transcription, GPT-4o-mini
++  highlight scoring, ffmpeg render). Background jobs run on a plain Python thread
++  per upload/render (no Celery/Redis needed for this MVP).
+ 
+ **AI provider: OpenAI only** (`whisper-1` for transcription, `gpt-4o-mini` for highlight
+ analysis). No Gemini, no other model provider is called anywhere in the backend.
+@@ -20,8 +22,8 @@ analysis). No Gemini, no other model provider is called anywhere in the backend.
+ ## 1. Architecture at a glance
+ 
+ ```
+-                 ┌─────────────────────────┐
+-  Browser  ───▶  │  Flask (backend/app.py)  │
++                 ┌───────────────────────────┐
++  Browser  ───▶  │ FastAPI (backend/app/main)│
+                  │  - serves built React SPA │
+                  │  - /auth/*  (Google OAuth,│
+                  │    JWT cookies, Postgres) │
+@@ -47,25 +49,29 @@ ready) or `done` (render ready).
+ 
+ | Feature | Status |
+ |---|---|
+-| Google OAuth login (Postgres-backed sessions, JWT cookies) | **Real** — copied from your `Manweta AI` auth module |
+-| Video upload → OpenAI Whisper transcription (word timestamps) | **Real** |
++| Google OAuth login (Postgres-backed sessions, JWT cookies) | **Real** — `backend/app/routers/auth.py` |
++| Video upload → OpenAI Whisper transcription (word timestamps) | **Real** — `backend/app/services/openai_service.py` |
+ | GPT-4o-mini highlight/virality scoring | **Real** |
+-| ffmpeg render: trim, 9:16/1:1/16:9 crop, ASS caption burn-in | **Real** (smoke-tested — see below) |
++| ffmpeg render: trim, 9:16/1:1/16:9 crop, ASS caption burn-in | **Real** — end-to-end smoke-tested (see below) |
+ | Wizard Step 1 (upload) → Step 2/3 (transcript & highlights) | **Wired to the real API** for uploaded files |
+ | Wizard Step 5 → Step 6 (render) → Step 7 (deliver) | **Wired to the real API** for uploaded files |
+ | YouTube / Vimeo / Loom URL ingestion | **Still mock data** — needs a legally-reviewed download step (see §6) |
+ | "Sample video" templates in Step 1 | **Still mock data** — intentionally, so the UI stays explorable without uploading |
+-| Phone/OTP login (Twilio) | Backend routes exist (copied from your auth module) but **no UI is wired to them** — Google is the only login button in the UI |
++| Phone/OTP login (Twilio) | **Not implemented** in this backend — Google is the only login path for now |
+ | Logout button | **Not in the UI yet** — `POST /auth/logout` exists, just needs a button wired to it |
+ | Billing / Stripe | Not implemented — `plan`/`creditsRemaining` are still placeholder values |
+ | S3/cloud storage for uploaded & rendered video | Files are stored on local disk (`backend/static/uploads`, `backend/static/outputs`) — fine for one instance, not for autoscaling (see §6) |
++| Speaker-tracking crop (`smart_speaker` framing) | **Stub** — all framing modes currently resolve to the same center-crop (see §6, item 7) |
++| Background music mixing (`musicTrack`/`musicVolume`) | **Stub** — style fields are stored and returned, but no audio track is mixed in yet |
+ 
+ I ran `npx tsc --noEmit` (clean), `npm run build` (clean), byte-compiled every backend
+-`.py` file, imported the Flask app and confirmed all routes register, and ran the
+-ffmpeg render pipeline end-to-end against a generated test clip (probe → ASS captions
+-→ crop/scale/burn-in → H.264 output). I have **not** run the full upload → Whisper →
+-GPT → render loop against a real OpenAI key or a real Postgres database — do that
+-first, locally, before deploying (§4).
++`.py` file, and ran a full integration smoke test: real upload → real ffprobe →
++mocked Whisper/GPT (no external API key available in this environment) → real
++ffmpeg render with ASS caption burn-in → served the output back over HTTP. Auth
++was exercised with a manually-seeded session (no real Google OAuth credentials
++available here either). **Before deploying, run it once with real `OPENAI_API_KEY`
++and `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`** to confirm those two integrations
++end-to-end (§4).
+ 
+ ---
+ 
+@@ -83,12 +89,15 @@ Copy `.env.example` → `.env` and fill in:
+ | `APP_URL` / `FRONTEND_URL` | Yes | Your deployed domain in production |
+ | `COOKIE_SECURE` | Yes | `false` locally (HTTP), **`true` in production (HTTPS)** |
+ | `MAX_UPLOAD_MB` | No | Default 500 |
+-| `TWILIO_*` | No | Only needed if you wire up phone login later |
+ 
+ ---
+ 
+ ## 4. Run it locally
+ 
++Tables are created automatically at startup (`Base.metadata.create_all` in
++`backend/app/main.py`) — you do **not** need to run the `.sql` files by hand;
++they're kept in `backend/db/` purely as human-readable schema documentation.
++
+ ### Option A — Docker (recommended, closest to production)
+ 
+ ```bash
+@@ -98,41 +107,33 @@ cp .env.example .env
+ docker compose up --build
+ ```
+ 
+-This starts Postgres + the backend (which serves the built frontend). Then, once
+-running, apply the DB schema:
+-
+-```bash
+-docker compose exec db psql -U postgres -d manweta_clipper -f - < backend/db/schema_auth.sql
+-docker compose exec db psql -U postgres -d manweta_clipper -f - < backend/db/schema_clipper.sql
+-```
+-
+-Open http://127.0.0.1:5000
++This starts Postgres + the backend (which serves the built frontend, and creates
++its own tables on first boot). Open http://127.0.0.1:5000
+ 
+ ### Option B — Run frontend and backend separately (faster iteration)
+ 
+ ```bash
+ # Terminal 1: Postgres (or use a local install)
+ docker run -d --name clipper-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=manweta_clipper -p 5432:5432 postgres:16-alpine
+-psql postgresql://postgres:postgres@localhost:5432/manweta_clipper -f backend/db/schema_auth.sql
+-psql postgresql://postgres:postgres@localhost:5432/manweta_clipper -f backend/db/schema_clipper.sql
+ 
+ # Terminal 2: backend
+ cd backend
+ python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+ pip install -r requirements.txt
+-cp ../.env.example .env   # edit values
+-python app.py             # http://127.0.0.1:5000
++cp .env.example .env      # edit values (OPENAI_API_KEY, SECRET_KEY, GOOGLE_* etc.)
++python run.py              # http://127.0.0.1:5000 (uvicorn --reload)
+ 
+ # Terminal 3: frontend (Vite dev server with hot reload)
+-cd frontend
+ npm install
+-cp .env.example .env      # VITE_API_BASE_URL=http://127.0.0.1:5000
+-npm run dev                # http://localhost:3000
++npm run dev                # http://localhost:3000, proxies /auth and /api to :5000 in dev via VITE_API_URL
+ ```
+ 
+ `ffmpeg`/`ffprobe` must be on `PATH` for Option B (`apt install ffmpeg` / `brew install
+ ffmpeg`) — the Dockerfile installs this automatically for Option A.
+ 
++Interactive API docs are auto-generated by FastAPI at `/docs` (Swagger) and
++`/redoc` once the backend is running.
++
+ ### Configure Google OAuth for local dev
+ 
+ In Google Cloud Console → Credentials → OAuth 2.0 Client ID (Web application), add:
+@@ -151,7 +152,8 @@ Any host that can run a Docker container + a managed Postgres works (Render, Rai
+ Fly.io, DigitalOcean App Platform, AWS/GCP/Azure). Steps are the same shape everywhere:
+ 
+ 1. **Provision Postgres** (managed is easiest — Render/Railway/Neon/Supabase all work).
+-   Run `backend/db/schema_auth.sql` then `backend/db/schema_clipper.sql` against it.
++   No manual schema step needed — the backend creates its tables automatically on
++   first boot (`backend/db/*.sql` are kept only as reference documentation).
+ 2. **Set environment variables** on the host from `.env.example` — especially
+    `DATABASE_URL` (to the managed Postgres), `OPENAI_API_KEY`, `SECRET_KEY`,
+    `GOOGLE_CLIENT_ID/SECRET`, and set `COOKIE_SECURE=true` + `APP_URL`/`FRONTEND_URL`
+@@ -160,8 +162,8 @@ Fly.io, DigitalOcean App Platform, AWS/GCP/Azure). Steps are the same shape ever
+    `https://yourdomain.com/auth/google/callback` — and set `GOOGLE_REDIRECT_URI`
+    to match exactly.
+ 4. **Build & deploy** the root `Dockerfile` (multi-stage: builds the React app, then
+-   runs Flask via gunicorn). Most PaaS providers auto-detect it — just point them at
+-   the repo root.
++   runs FastAPI via gunicorn + uvicorn workers). Most PaaS providers auto-detect it —
++   just point them at the repo root.
+ 5. **Persistent storage for uploads/renders**: `backend/static/uploads` and
+    `backend/static/outputs` need to survive restarts and be shared if you ever run more
+    than one instance. On a single-instance host, mount a persistent volume at those
+@@ -172,57 +174,77 @@ Fly.io, DigitalOcean App Platform, AWS/GCP/Azure). Steps are the same shape ever
+ 
+ ## 6. What to do next (in rough priority order)
+ 
+-1. **Run it locally end-to-end with a real OpenAI key** before deploying: upload a
+-   short (1-2 min) video, confirm real highlights come back, pick one, render it, and
+-   play the downloaded file. This is the one thing I couldn't verify without your
+-   credentials.
++1. **Run it locally end-to-end with real credentials** before deploying: a real
++   `OPENAI_API_KEY` (upload a short 1-2 min video, confirm real highlights come back,
++   render one, play the downloaded file) and real `GOOGLE_CLIENT_ID`/`SECRET` (click
++   through the login flow). These are the two integrations I couldn't verify without
++   your credentials — everything else was exercised with a mocked/seeded equivalent.
+ 2. **Move uploaded/rendered video off local disk and onto S3-compatible storage**
+    (S3, Cloudflare R2, Backblaze B2). Local disk works for a single always-on instance
+    but breaks the moment you scale to >1 instance or the host recycles the filesystem.
+-   `services/job_service.py` and `app.py`'s `/media/outputs/<file>` route are the two
+-   places to change.
++   `backend/app/services/job_service.py` (file save path) and `backend/app/main.py`'s
++   `/media/outputs` mount are the two places to change.
+ 3. **Move background processing off in-request threads and onto a real queue**
+-   (Celery/RQ + Redis, or a hosted queue). The current threading approach works for
+-   low volume but doesn't survive a process restart mid-job and doesn't scale past one
+-   worker process.
++   (Celery/RQ + Redis, or a hosted queue). The current threading approach
++   (`backend/app/services/job_service.py`) works for low volume but doesn't survive a
++   process restart mid-job and doesn't scale past one worker process.
+ 4. **Wire up YouTube/Vimeo/Loom URL ingestion** using `yt-dlp` (review each platform's
+    Terms of Service for your use case first — this is a legal/policy decision, not
+    just a technical one).
+-5. **Add a logout button** to the UI (`AuthApi.logout()` in `frontend/src/services/api.ts`
++5. **Add a logout button** to the UI (`AuthApi.logout()` in `src/services/api.ts`
+    already exists — it just isn't wired to anything visible yet).
+ 6. **Add real billing** (Stripe) if you want the pricing tiers in `CheckoutModal.tsx` to
+    actually charge people and update `clipper.credits` server-side, instead of just
+-   updating `localStorage`.
+-7. **Improve the "smart_speaker" framing mode** in `render_service.py` — it currently
+-   center-crops for all framing modes; real speaker-tracking crop needs a
++   updating `localStorage`. `User.credits_remaining`/`credits_total` already exist as
++   DB columns (`backend/app/models.py`) but aren't wired to anything yet.
++7. **Improve the "smart_speaker" framing mode** in `backend/app/services/render_service.py`
++   — it currently center-crops for all framing modes; real speaker-tracking crop needs a
+    face/motion-detection pass (e.g. via OpenCV) before the ffmpeg crop filter.
+-8. **Add rate limiting / abuse protection** on `/api/jobs` (video uploads + OpenAI
++8. **Mix in background music** (`styleConfig.musicTrack`/`musicVolume`) — currently
++   stored but not applied during render; needs a small licensed-track library and an
++   ffmpeg audio-mix step in `render_service.render_clip`.
++9. **Add rate limiting / abuse protection** on `/api/jobs` (video uploads + OpenAI
+    calls both cost real money per request).
+-9. **Decide on the phone/OTP login UI** — the backend already supports it
+-   (`DEV_OTP_MODE` + optional Twilio Verify); add it to `AuthModal.tsx` if you want a
+-   non-Google login path, or delete the unused routes/tables if you don't.
++10. **Add phone/OTP login** if you want a non-Google path — not implemented in this
++    backend at all yet (no Twilio integration, no OTP tables).
+ 
+ ---
+ 
+ ## 7. Where things live
+ 
+ ```
+-manweta-clipper/
+-├── Dockerfile                 # multi-stage: builds frontend, runs Flask+gunicorn
+-├── docker-compose.yml         # local dev: Postgres + backend
+-├── .env.example                # copy to .env
+-├── backend/
+-│   ├── app.py                 # Flask app, /api/jobs/* routes, serves built frontend
+-│   ├── auth/                  # copied from Manweta AI: Google OAuth, JWT, Postgres sessions
+-│   ├── services/
+-│   │   ├── openai_service.py  # Whisper transcription + GPT highlight analysis (OpenAI only)
+-│   │   ├── render_service.py  # ffmpeg probe / caption burn-in / render
+-│   │   └── job_service.py     # DB CRUD + background pipeline orchestration
+-│   └── db/
+-│       ├── schema_auth.sql    # users, sessions, auth_identities, otp (from Manweta AI)
+-│       └── schema_clipper.sql # clipper.jobs, backend_logs, credits
+-└── frontend/
+-    ├── src/services/api.ts    # new: real REST client for the backend above
+-    ├── src/components/AuthModal.tsx  # Google button now does a real OAuth redirect
+-    └── src/App.tsx             # upload/render steps call the real API for uploaded files
++manweta-clipper-UIv1/
++├── Dockerfile                  # multi-stage: builds the frontend, runs FastAPI+gunicorn
++├── docker-compose.yml          # local dev: Postgres + backend
++├── .env.example                 # copy to .env (also copied to backend/.env.example)
++├── vite.config.ts               # dev-server proxy to backend (/auth, /api, /media)
++├── src/                         # React/Vite frontend (this is the repo root app)
++│   ├── services/api.ts          # REST client — the contract the backend below implements
++│   ├── components/AuthModal.tsx # Google button does a real OAuth redirect
++│   └── App.tsx                  # upload/render wizard steps call the real API
++└── backend/
++    ├── run.py                   # local dev entrypoint (uvicorn --reload)
++    ├── requirements.txt
++    ├── app/
++    │   ├── main.py               # FastAPI app: CORS, static mounts, table creation, routers
++    │   ├── config.py              # env-var settings
++    │   ├── database.py            # SQLAlchemy engine/session
++    │   ├── models.py              # User, AuthIdentity, UserSession, Job, JobLog
++    │   ├── schemas.py             # Pydantic request/response shapes (mirrors src/types.ts)
++    │   ├── security.py            # JWT + cookie helpers
++    │   ├── deps.py                # current-user / current-session FastAPI dependencies
++    │   ├── routers/
++    │   │   ├── auth.py            # /auth/google, /auth/google/callback, /auth/me, /auth/logout
++    │   │   └── jobs.py            # /api/jobs, /api/jobs/{id}, /{id}/logs, /{id}/render
++    │   └── services/
++    │       ├── openai_service.py  # Whisper transcription + GPT-4o-mini highlight scoring
++    │       ├── render_service.py  # ffprobe / ASS caption generation / ffmpeg render
++    │       └── job_service.py     # DB CRUD + background pipeline orchestration (threads)
++    ├── db/
++    │   ├── schema_auth.sql        # reference only — tables are auto-created by SQLAlchemy
++    │   └── schema_clipper.sql     # reference only — same as above
++    └── static/
++        ├── uploads/               # raw uploaded video, per job_id
++        ├── outputs/                # rendered clips, served at /media/outputs/<file>
++        └── tmp/                    # scratch: extracted audio, .ass caption files
+ ```
+diff --git a/backend/.env.example b/backend/.env.example
+new file mode 100644
+index 0000000..f65ebf4
+--- /dev/null
++++ b/backend/.env.example
+@@ -0,0 +1,19 @@
++# --- Frontend (Vite) ---
++VITE_API_URL=
++VITE_ENABLE_MOCK_FALLBACK=
++
++# --- Backend core ---
++SECRET_KEY=
++DATABASE_URL=postgresql://postgres:postgres@localhost:5432/manweta_clipper
++APP_URL=http://127.0.0.1:5000
++FRONTEND_URL=http://localhost:3000
++COOKIE_SECURE=false
++MAX_UPLOAD_MB=500
++
++# --- OpenAI (Whisper transcription + GPT-4o-mini highlight scoring) ---
++OPENAI_API_KEY=
++
++# --- Google OAuth ---
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++GOOGLE_REDIRECT_URI=http://127.0.0.1:5000/auth/google/callback
+diff --git a/backend/app/__init__.py b/backend/app/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/config.py b/backend/app/config.py
+new file mode 100644
+index 0000000..b03385a
+--- /dev/null
++++ b/backend/app/config.py
+@@ -0,0 +1,52 @@
++"""
++Centralized configuration. Everything is loaded from environment variables
++(see ../../.env.example at the repo root). Nothing here should be hardcoded
++secrets — the settings object just reads and validates what's in the env.
++"""
++from pathlib import Path
++
++from pydantic_settings import BaseSettings, SettingsConfigDict
++
++BACKEND_DIR = Path(__file__).resolve().parent.parent
++STATIC_DIR = BACKEND_DIR / "static"
++UPLOADS_DIR = STATIC_DIR / "uploads"
++OUTPUTS_DIR = STATIC_DIR / "outputs"
++TMP_DIR = STATIC_DIR / "tmp"
++
++
++class Settings(BaseSettings):
++    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
++
++    # --- Core ---
++    SECRET_KEY: str = "dev-insecure-secret-change-me"
++    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/manweta_clipper"
++    APP_URL: str = "http://127.0.0.1:5000"
++    FRONTEND_URL: str = "http://localhost:3000"
++    COOKIE_SECURE: bool = False
++    COOKIE_DOMAIN: str | None = None
++    MAX_UPLOAD_MB: int = 500
++
++    # --- OpenAI ---
++    OPENAI_API_KEY: str = ""
++    WHISPER_MODEL: str = "whisper-1"
++    HIGHLIGHT_MODEL: str = "gpt-4o-mini"
++
++    # --- Google OAuth ---
++    GOOGLE_CLIENT_ID: str = ""
++    GOOGLE_CLIENT_SECRET: str = ""
++    GOOGLE_REDIRECT_URI: str = "http://127.0.0.1:5000/auth/google/callback"
++
++    # --- Auth session ---
++    JWT_ALGORITHM: str = "HS256"
++    SESSION_TTL_DAYS: int = 30
++    SESSION_COOKIE_NAME: str = "manweta_session"
++
++    @property
++    def max_upload_bytes(self) -> int:
++        return self.MAX_UPLOAD_MB * 1024 * 1024
++
++
++settings = Settings()
++
++for d in (UPLOADS_DIR, OUTPUTS_DIR, TMP_DIR):
++    d.mkdir(parents=True, exist_ok=True)
+diff --git a/backend/app/database.py b/backend/app/database.py
+new file mode 100644
+index 0000000..439fc81
+--- /dev/null
++++ b/backend/app/database.py
+@@ -0,0 +1,19 @@
++from sqlalchemy import create_engine
++from sqlalchemy.orm import DeclarativeBase, sessionmaker
++
++from .config import settings
++
++engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, future=True)
++SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
++
++
++class Base(DeclarativeBase):
++    pass
++
++
++def get_db():
++    db = SessionLocal()
++    try:
++        yield db
++    finally:
++        db.close()
+diff --git a/backend/app/deps.py b/backend/app/deps.py
+new file mode 100644
+index 0000000..e46b165
+--- /dev/null
++++ b/backend/app/deps.py
+@@ -0,0 +1,41 @@
++from datetime import datetime, timezone
++
++from fastapi import Depends, HTTPException, Request, status
++from sqlalchemy.orm import Session
++
++from . import models
++from .config import settings
++from .database import get_db
++from .security import decode_access_token
++
++
++def get_current_session_row(request: Request, db: Session = Depends(get_db)) -> models.UserSession | None:
++    token = request.cookies.get(settings.SESSION_COOKIE_NAME)
++    if not token:
++        return None
++
++    payload = decode_access_token(token)
++    if not payload:
++        return None
++
++    session_row = db.get(models.UserSession, payload.get("sid"))
++    if not session_row or session_row.revoked_at is not None:
++        return None
++    if session_row.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
++        return None
++    return session_row
++
++
++def get_optional_user(
++    session_row: models.UserSession | None = Depends(get_current_session_row),
++    db: Session = Depends(get_db),
++) -> models.User | None:
++    if session_row is None:
++        return None
++    return db.get(models.User, session_row.user_id)
++
++
++def get_current_user(user: models.User | None = Depends(get_optional_user)) -> models.User:
++    if user is None:
++        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
++    return user
+diff --git a/backend/app/main.py b/backend/app/main.py
+new file mode 100644
+index 0000000..2f0e4b3
+--- /dev/null
++++ b/backend/app/main.py
+@@ -0,0 +1,48 @@
++from pathlib import Path
++
++from fastapi import FastAPI
++from fastapi.middleware.cors import CORSMiddleware
++from fastapi.staticfiles import StaticFiles
++
++from . import models  # noqa: F401 - ensures models are registered on Base before create_all
++from .config import OUTPUTS_DIR, settings
++from .database import Base, engine
++from .routers import auth, jobs
++
++app = FastAPI(title="Manweta AI Clipper API", version="0.1.0")
++
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=[settings.FRONTEND_URL],
++    allow_credentials=True,
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++
++# Rendered clips are served straight off disk. In production, swap this for
++# S3/Cloud Storage + signed URLs (see README §6, item 2) — this local mount
++# only works for a single always-on instance.
++app.mount("/media/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="media-outputs")
++
++app.include_router(auth.router)
++app.include_router(jobs.router)
++
++# In production the Dockerfile builds the React app into ../dist and this
++# backend serves it directly (same-origin, no CORS needed there). Mounted
++# last so it never shadows the /auth, /api, or /media routes above.
++_frontend_dist = Path(__file__).resolve().parent.parent.parent / "dist"
++if _frontend_dist.is_dir():
++    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
++
++
++@app.on_event("startup")
++def on_startup() -> None:
++    # MVP-friendly: create tables directly from the SQLAlchemy models rather
++    # than requiring a manual `psql -f schema.sql` step. Swap for Alembic
++    # migrations once the schema needs to evolve without data loss.
++    Base.metadata.create_all(bind=engine)
++
++
++@app.get("/healthz")
++def healthz():
++    return {"ok": True}
+diff --git a/backend/app/models.py b/backend/app/models.py
+new file mode 100644
+index 0000000..838be2a
+--- /dev/null
++++ b/backend/app/models.py
+@@ -0,0 +1,133 @@
++import uuid
++from datetime import datetime, timezone
++
++from sqlalchemy import (
++    JSON,
++    Boolean,
++    DateTime,
++    Float,
++    ForeignKey,
++    Integer,
++    String,
++    Text,
++)
++from sqlalchemy.orm import Mapped, mapped_column, relationship
++
++from .database import Base
++
++
++def _id(prefix: str) -> str:
++    return f"{prefix}_{uuid.uuid4().hex[:24]}"
++
++
++def _now() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++# ---------------------------------------------------------------------------
++# Auth (users / sessions / OAuth identities)
++# ---------------------------------------------------------------------------
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: _id("usr"))
++    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
++    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
++    profile_image: Mapped[str | None] = mapped_column(Text, nullable=True)
++    plan: Mapped[str] = mapped_column(String(20), nullable=False, default="starter")
++    credits_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
++    credits_total: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
++
++    identities: Mapped[list["AuthIdentity"]] = relationship(back_populates="user", cascade="all, delete-orphan")
++    sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
++    jobs: Mapped[list["Job"]] = relationship(back_populates="user", cascade="all, delete-orphan")
++
++
++class AuthIdentity(Base):
++    """Links a third-party login (e.g. Google) to a local user."""
++
++    __tablename__ = "auth_identities"
++
++    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: _id("ident"))
++    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
++    provider: Mapped[str] = mapped_column(String(30), nullable=False)  # 'google'
++    provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
++
++    user: Mapped["User"] = relationship(back_populates="identities")
++
++
++class UserSession(Base):
++    """A Postgres-backed session so JWTs can be revoked (logout / security)."""
++
++    __tablename__ = "sessions"
++
++    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: _id("ses"))
++    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
++    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
++    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
++
++    user: Mapped["User"] = relationship(back_populates="sessions")
++
++
++# ---------------------------------------------------------------------------
++# Clipper domain (jobs / logs)
++# ---------------------------------------------------------------------------
++
++
++class Job(Base):
++    __tablename__ = "jobs"
++
++    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: _id("job"))
++    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
++
++    title: Mapped[str] = mapped_column(String(255), nullable=False, default="Untitled clip")
++    source_type: Mapped[str] = mapped_column(String(20), nullable=False, default="upload")
++    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
++    source_file_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
++    source_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
++
++    file_size_mb: Mapped[float] = mapped_column(Float, nullable=False, default=0)
++    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0)
++    resolution: Mapped[str | None] = mapped_column(String(20), nullable=True)
++    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
++    thumbnail_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
++
++    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
++    current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
++    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
++    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
++
++    transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
++    words: Mapped[list | None] = mapped_column(JSON, nullable=True)
++    highlights: Mapped[list | None] = mapped_column(JSON, nullable=True)
++    selected_highlight_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
++    custom_clip_range: Mapped[list | None] = mapped_column(JSON, nullable=True)
++    style_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
++
++    rendered_video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
++    rendered_video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
++    download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
++
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
++    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
++
++    user: Mapped["User"] = relationship(back_populates="jobs")
++    logs: Mapped[list["JobLog"]] = relationship(back_populates="job", cascade="all, delete-orphan", order_by="JobLog.created_at")
++
++
++class JobLog(Base):
++    __tablename__ = "job_logs"
++
++    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: _id("log"))
++    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), nullable=False, index=True)
++    service: Mapped[str] = mapped_column(String(60), nullable=False, default="pipeline")
++    level: Mapped[str] = mapped_column(String(10), nullable=False, default="info")  # info|success|warn|error
++    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
++
++    job: Mapped["Job"] = relationship(back_populates="logs")
+diff --git a/backend/app/routers/__init__.py b/backend/app/routers/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/routers/auth.py b/backend/app/routers/auth.py
+new file mode 100644
+index 0000000..026f3b5
+--- /dev/null
++++ b/backend/app/routers/auth.py
+@@ -0,0 +1,126 @@
++from datetime import datetime, timedelta, timezone
++from urllib.parse import urlencode
++
++import httpx
++from fastapi import APIRouter, Depends, Response
++from fastapi.responses import RedirectResponse
++from sqlalchemy.orm import Session
++
++from .. import models
++from ..config import settings
++from ..database import get_db
++from ..deps import get_current_session_row, get_optional_user
++from ..schemas import AuthMeResponse, AuthUser
++from ..security import clear_session_cookie, create_access_token, set_session_cookie
++
++router = APIRouter(prefix="/auth", tags=["auth"])
++
++GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
++GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
++GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
++
++
++@router.get("/google")
++def google_login():
++    """Redirect the browser into Google's OAuth consent screen."""
++    params = {
++        "client_id": settings.GOOGLE_CLIENT_ID,
++        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
++        "response_type": "code",
++        "scope": "openid email profile",
++        "access_type": "online",
++        "prompt": "select_account",
++    }
++    return RedirectResponse(url=f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
++
++
++@router.get("/google/callback")
++def google_callback(code: str | None = None, error: str | None = None, db: Session = Depends(get_db)):
++    if error or not code:
++        return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error=1")
++
++    # 1. Exchange the authorization code for tokens.
++    with httpx.Client(timeout=15) as client:
++        token_resp = client.post(
++            GOOGLE_TOKEN_URL,
++            data={
++                "code": code,
++                "client_id": settings.GOOGLE_CLIENT_ID,
++                "client_secret": settings.GOOGLE_CLIENT_SECRET,
++                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
++                "grant_type": "authorization_code",
++            },
++        )
++        if token_resp.status_code != 200:
++            return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error=1")
++        access_token = token_resp.json().get("access_token")
++
++        # 2. Fetch the Google profile.
++        profile_resp = client.get(
++            GOOGLE_USERINFO_URL,
++            headers={"Authorization": f"Bearer {access_token}"},
++        )
++        if profile_resp.status_code != 200:
++            return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error=1")
++        profile = profile_resp.json()
++
++    google_sub = profile.get("sub")
++    email = profile.get("email")
++    name = profile.get("name") or (email.split("@")[0] if email else "Studio Creator")
++    picture = profile.get("picture")
++
++    # 3. Upsert the user + linked identity.
++    identity = (
++        db.query(models.AuthIdentity)
++        .filter_by(provider="google", provider_user_id=google_sub)
++        .one_or_none()
++    )
++    if identity:
++        user = identity.user
++        user.name = name or user.name
++        user.profile_image = picture or user.profile_image
++    else:
++        user = db.query(models.User).filter_by(email=email).one_or_none()
++        if not user:
++            user = models.User(email=email, name=name, profile_image=picture)
++            db.add(user)
++            db.flush()
++        db.add(models.AuthIdentity(user_id=user.id, provider="google", provider_user_id=google_sub))
++
++    # 4. Create a DB-backed session + signed JWT cookie.
++    session_row = models.UserSession(
++        user_id=user.id,
++        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.SESSION_TTL_DAYS),
++    )
++    db.add(session_row)
++    db.commit()
++    db.refresh(session_row)
++
++    token = create_access_token(user_id=user.id, session_id=session_row.id)
++    redirect = RedirectResponse(url=settings.FRONTEND_URL)
++    set_session_cookie(redirect, token)
++    return redirect
++
++
++@router.get("/me", response_model=AuthMeResponse)
++def me(user: models.User | None = Depends(get_optional_user)):
++    if not user:
++        return AuthMeResponse(authenticated=False, user=None)
++    return AuthMeResponse(
++        authenticated=True,
++        user=AuthUser(id=user.id, name=user.name, email=user.email, profile_image=user.profile_image),
++    )
++
++
++@router.post("/logout")
++def logout(
++    response: Response,
++    session_row: models.UserSession | None = Depends(get_current_session_row),
++    db: Session = Depends(get_db),
++):
++    if session_row is not None:
++        session_row.revoked_at = datetime.now(timezone.utc)
++        db.add(session_row)
++        db.commit()
++    clear_session_cookie(response)
++    return {"authenticated": False}
+diff --git a/backend/app/routers/jobs.py b/backend/app/routers/jobs.py
+new file mode 100644
+index 0000000..1a74382
+--- /dev/null
++++ b/backend/app/routers/jobs.py
+@@ -0,0 +1,53 @@
++from fastapi import APIRouter, Depends, File, Form, UploadFile
++from sqlalchemy.orm import Session
++
++from .. import models
++from ..database import get_db
++from ..deps import get_current_user
++from ..schemas import ClipperJobOut, RenderAck, RenderRequest
++from ..services import job_service
++
++router = APIRouter(prefix="/api/jobs", tags=["jobs"])
++
++
++@router.post("", response_model=ClipperJobOut, status_code=201)
++async def create_job(
++    file: UploadFile = File(...),
++    title: str = Form(""),
++    db: Session = Depends(get_db),
++    user: models.User = Depends(get_current_user),
++):
++    job = job_service.create_job(db, user, file, title)
++    return job_service.to_response(job)
++
++
++@router.get("", response_model=list[ClipperJobOut])
++def list_jobs(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
++    jobs = job_service.list_jobs(db, user)
++    return [job_service.to_response(j) for j in jobs]
++
++
++@router.get("/{job_id}", response_model=ClipperJobOut)
++def get_job(job_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
++    job = job_service.get_owned_job(db, job_id, user)
++    return job_service.to_response(job)
++
++
++@router.get("/{job_id}/logs")
++def get_job_logs(job_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
++    job = job_service.get_owned_job(db, job_id, user)
++    return job_service.to_response(job)["backendLogs"]
++
++
++@router.post("/{job_id}/render", response_model=RenderAck)
++def render_job(
++    job_id: str,
++    payload: RenderRequest,
++    db: Session = Depends(get_db),
++    user: models.User = Depends(get_current_user),
++):
++    job = job_service.get_owned_job(db, job_id, user)
++    job_service.start_render(
++        db, job, payload.selection.model_dump(), payload.styleConfig.model_dump()
++    )
++    return RenderAck(ok=True, jobId=job.id, message="Render started")
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+new file mode 100644
+index 0000000..2eec47b
+--- /dev/null
++++ b/backend/app/schemas.py
+@@ -0,0 +1,121 @@
++from typing import Any, Literal, Optional
++
++from pydantic import BaseModel, ConfigDict
++
++
++# ---------------------------------------------------------------------------
++# Auth
++# ---------------------------------------------------------------------------
++
++
++class AuthUser(BaseModel):
++    id: str
++    name: str
++    email: str
++    profile_image: Optional[str] = None
++
++
++class AuthMeResponse(BaseModel):
++    authenticated: bool
++    user: Optional[AuthUser] = None
++
++
++# ---------------------------------------------------------------------------
++# Clipper jobs — field names/shape match src/types.ts::ClipperJob exactly so
++# the frontend can consume responses with zero mapping.
++# ---------------------------------------------------------------------------
++
++
++class BackendLogOut(BaseModel):
++    id: str
++    timestamp: str
++    service: str
++    level: Literal["info", "success", "warn", "error"]
++    message: str
++
++
++class WordTimestampOut(BaseModel):
++    word: str
++    start: float
++    end: float
++    confidence: Optional[float] = None
++    speaker: Optional[str] = None
++
++
++class HighlightSegmentOut(BaseModel):
++    id: str
++    title: str
++    category: str
++    startTime: float
++    endTime: float
++    duration: float
++    score: float
++    hook: str
++    summary: str
++    hookStrength: Optional[float] = None
++    pacingScore: Optional[float] = None
++
++
++class StyleConfigIn(BaseModel):
++    model_config = ConfigDict(extra="allow")
++
++    captionStyle: str = "hormozi"
++    aspectRatio: str = "9:16"
++    framing: str = "smart_speaker"
++    fontSize: str = "lg"
++    fontFamily: str = "display"
++    textColor: str = "#FFFFFF"
++    highlightColor: str = "#00FF85"
++    showEmojis: bool = True
++    position: str = "middle"
++    musicTrack: str = "none"
++    musicVolume: int = 0
++    showBrandLogo: bool = False
++    brandName: str = ""
++    autoReOffsetTimestamps: bool = True
++    customFontSizePx: Optional[int] = None
++
++
++class ClipperJobOut(BaseModel):
++    id: str
++    title: str
++    sourceType: str
++    sourceUrl: Optional[str] = None
++    sourceFileName: Optional[str] = None
++    fileSizeMb: float
++    durationSeconds: float
++    resolution: Optional[str] = None
++    fps: Optional[float] = None
++    thumbnailUrl: str
++    status: str
++    currentStep: int
++    progressPercent: int
++    transcriptText: Optional[str] = None
++    words: Optional[list[WordTimestampOut]] = None
++    highlights: Optional[list[HighlightSegmentOut]] = None
++    selectedHighlightId: Optional[str] = None
++    customClipRange: list[float]
++    styleConfig: dict[str, Any]
++    createdAt: str
++    completedAt: Optional[str] = None
++    syncState: Optional[str] = "synced"
++    backendLogs: Optional[list[BackendLogOut]] = None
++    errorMessage: Optional[str] = None
++    renderedVideoUrl: Optional[str] = None
++    downloadUrl: Optional[str] = None
++
++
++class RenderSelection(BaseModel):
++    highlightId: Optional[str] = None
++    customRange: Optional[list[float]] = None
++
++
++class RenderRequest(BaseModel):
++    selection: RenderSelection
++    styleConfig: StyleConfigIn
++
++
++class RenderAck(BaseModel):
++    ok: bool
++    jobId: str
++    message: str
+diff --git a/backend/app/security.py b/backend/app/security.py
+new file mode 100644
+index 0000000..c171e1f
+--- /dev/null
++++ b/backend/app/security.py
+@@ -0,0 +1,40 @@
++from datetime import datetime, timedelta, timezone
++
++from fastapi import Response
++from jose import JWTError, jwt
++
++from .config import settings
++
++
++def create_access_token(user_id: str, session_id: str) -> str:
++    expire = datetime.now(timezone.utc) + timedelta(days=settings.SESSION_TTL_DAYS)
++    payload = {"sub": user_id, "sid": session_id, "exp": expire}
++    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
++
++
++def decode_access_token(token: str) -> dict | None:
++    try:
++        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
++    except JWTError:
++        return None
++
++
++def set_session_cookie(response: Response, token: str) -> None:
++    response.set_cookie(
++        key=settings.SESSION_COOKIE_NAME,
++        value=token,
++        httponly=True,
++        secure=settings.COOKIE_SECURE,
++        samesite="lax",
++        domain=settings.COOKIE_DOMAIN,
++        max_age=settings.SESSION_TTL_DAYS * 24 * 60 * 60,
++        path="/",
++    )
++
++
++def clear_session_cookie(response: Response) -> None:
++    response.delete_cookie(
++        key=settings.SESSION_COOKIE_NAME,
++        domain=settings.COOKIE_DOMAIN,
++        path="/",
++    )
+diff --git a/backend/app/services/__init__.py b/backend/app/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/services/job_service.py b/backend/app/services/job_service.py
+new file mode 100644
+index 0000000..62604bb
+--- /dev/null
++++ b/backend/app/services/job_service.py
+@@ -0,0 +1,324 @@
++import threading
++import uuid
++from datetime import datetime, timezone
++from pathlib import Path
++
++from fastapi import HTTPException, UploadFile, status
++from sqlalchemy.orm import Session
++
++from .. import models
++from ..config import OUTPUTS_DIR, TMP_DIR, UPLOADS_DIR, settings
++from ..database import SessionLocal
++from . import openai_service, render_service
++
++DEFAULT_STYLE_CONFIG = {
++    "captionStyle": "hormozi",
++    "aspectRatio": "9:16",
++    "framing": "smart_speaker",
++    "fontSize": "lg",
++    "fontFamily": "display",
++    "textColor": "#FFFFFF",
++    "highlightColor": "#00FF85",
++    "showEmojis": True,
++    "position": "middle",
++    "musicTrack": "none",
++    "musicVolume": 0,
++    "showBrandLogo": False,
++    "brandName": "",
++    "autoReOffsetTimestamps": True,
++}
++
++DEFAULT_THUMBNAIL = (
++    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80"
++)
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++
++def _iso(dt: datetime | None) -> str | None:
++    if dt is None:
++        return None
++    return dt.astimezone(timezone.utc).isoformat()
++
++
++def add_log(db: Session, job_id: str, service: str, level: str, message: str) -> None:
++    db.add(models.JobLog(job_id=job_id, service=service, level=level, message=message))
++    db.commit()
++
++
++def to_response(job: models.Job) -> dict:
++    return {
++        "id": job.id,
++        "title": job.title,
++        "sourceType": job.source_type,
++        "sourceUrl": job.source_url,
++        "sourceFileName": job.source_file_name,
++        "fileSizeMb": job.file_size_mb,
++        "durationSeconds": job.duration_seconds,
++        "resolution": job.resolution,
++        "fps": job.fps,
++        "thumbnailUrl": job.thumbnail_url or DEFAULT_THUMBNAIL,
++        "status": job.status,
++        "currentStep": job.current_step,
++        "progressPercent": job.progress_percent,
++        "transcriptText": job.transcript_text,
++        "words": job.words,
++        "highlights": job.highlights,
++        "selectedHighlightId": job.selected_highlight_id,
++        "customClipRange": job.custom_clip_range or [0, min(30, job.duration_seconds or 30)],
++        "styleConfig": job.style_config or DEFAULT_STYLE_CONFIG,
++        "createdAt": _iso(job.created_at),
++        "completedAt": _iso(job.completed_at),
++        "syncState": "synced",
++        "backendLogs": [
++            {
++                "id": log.id,
++                "timestamp": _iso(log.created_at) or "",
++                "service": log.service,
++                "level": log.level,
++                "message": log.message,
++            }
++            for log in sorted(job.logs, key=lambda l: l.created_at)
++        ],
++        "errorMessage": job.error_message,
++        "renderedVideoUrl": job.rendered_video_url,
++        "downloadUrl": job.download_url,
++    }
++
++
++def get_owned_job(db: Session, job_id: str, user: models.User) -> models.Job:
++    job = db.get(models.Job, job_id)
++    if not job or job.user_id != user.id:
++        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
++    return job
++
++
++def list_jobs(db: Session, user: models.User) -> list[models.Job]:
++    return (
++        db.query(models.Job)
++        .filter_by(user_id=user.id)
++        .order_by(models.Job.created_at.desc())
++        .all()
++    )
++
++
++# ---------------------------------------------------------------------------
++# Upload -> create job -> kick off background pipeline
++# ---------------------------------------------------------------------------
++
++
++def _save_upload(job_id: str, upload: UploadFile) -> tuple[str, int]:
++    job_dir = UPLOADS_DIR / job_id
++    job_dir.mkdir(parents=True, exist_ok=True)
++    safe_name = Path(upload.filename or "upload.mp4").name
++    dest_path = job_dir / safe_name
++
++    size = 0
++    max_bytes = settings.max_upload_bytes
++    with dest_path.open("wb") as out:
++        while True:
++            chunk = upload.file.read(1024 * 1024)
++            if not chunk:
++                break
++            size += len(chunk)
++            if size > max_bytes:
++                out.close()
++                dest_path.unlink(missing_ok=True)
++                raise HTTPException(
++                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
++                    detail=f"File exceeds MAX_UPLOAD_MB ({settings.MAX_UPLOAD_MB} MB) limit.",
++                )
++            out.write(chunk)
++
++    return str(dest_path), size
++
++
++def create_job(db: Session, user: models.User, upload: UploadFile, title: str | None) -> models.Job:
++    job = models.Job(
++        user_id=user.id,
++        title=title or (upload.filename or "Untitled clip"),
++        source_type="upload",
++        source_file_name=upload.filename,
++        status="queued",
++        current_step=1,
++        progress_percent=5,
++        thumbnail_url=DEFAULT_THUMBNAIL,
++        style_config=DEFAULT_STYLE_CONFIG,
++        custom_clip_range=[0, 30],
++    )
++    db.add(job)
++    db.flush()  # assigns job.id
++
++    file_path, size_bytes = _save_upload(job.id, upload)
++    job.source_file_path = file_path
++    job.file_size_mb = round(size_bytes / (1024 * 1024), 2)
++
++    try:
++        meta = render_service.probe(file_path)
++        job.duration_seconds = meta["duration_seconds"]
++        job.resolution = meta["resolution"]
++        job.fps = meta["fps"]
++        job.custom_clip_range = [0, min(30, job.duration_seconds or 30)]
++    except render_service.FFmpegError as e:
++        job.error_message = f"Could not probe uploaded file: {e}"
++
++    db.commit()
++    db.refresh(job)
++    add_log(db, job.id, "Upload", "success", f"Received {job.source_file_name} ({job.file_size_mb} MB)")
++
++    thread = threading.Thread(target=_run_transcription_pipeline, args=(job.id,), daemon=True)
++    thread.start()
++
++    return job
++
++
++# ---------------------------------------------------------------------------
++# Background pipeline: transcription + highlight scoring
++# ---------------------------------------------------------------------------
++
++
++def _run_transcription_pipeline(job_id: str) -> None:
++    db = SessionLocal()
++    try:
++        job = db.get(models.Job, job_id)
++        if not job:
++            return
++
++        job.status = "transcribing"
++        job.progress_percent = 15
++        db.commit()
++        add_log(db, job_id, "Whisper", "info", "Extracting audio track for transcription…")
++
++        audio_path = str(TMP_DIR / f"{job_id}.mp3")
++        render_service.extract_audio(job.source_file_path, audio_path)
++
++        add_log(db, job_id, "Whisper", "info", "Transcribing audio with whisper-1…")
++        transcript = openai_service.transcribe_audio(audio_path)
++        job.transcript_text = transcript["text"]
++        job.words = transcript["words"]
++        job.progress_percent = 30
++        db.commit()
++        add_log(
++            db, job_id, "Whisper", "success",
++            "Decoded speech audio stream and aligned word timestamps",
++        )
++
++        job.status = "analyzing"
++        db.commit()
++        add_log(db, job_id, "GPT-4o-mini", "info", "Scoring highlight-worthy moments…")
++
++        highlights = openai_service.analyze_highlights(
++            job.transcript_text or "", job.words or [], job.duration_seconds
++        )
++        job.highlights = highlights
++        if highlights:
++            job.selected_highlight_id = highlights[0]["id"]
++            job.custom_clip_range = [highlights[0]["startTime"], highlights[0]["endTime"]]
++        job.status = "awaiting_selection"
++        job.current_step = 2
++        job.progress_percent = 40
++        db.commit()
++        add_log(
++            db, job_id, "GPT-4o-mini", "success",
++            f"Found {len(highlights)} highlight-worthy moment(s)",
++        )
++    except Exception as e:  # noqa: BLE001 - surface any pipeline failure to the job record
++        job = db.get(models.Job, job_id)
++        if job:
++            job.status = "failed"
++            job.error_message = str(e)
++            db.commit()
++        add_log(db, job_id, "pipeline", "error", f"Processing failed: {e}")
++    finally:
++        db.close()
++        Path(TMP_DIR / f"{job_id}.mp3").unlink(missing_ok=True)
++
++
++# ---------------------------------------------------------------------------
++# Render
++# ---------------------------------------------------------------------------
++
++
++def _resolve_clip_range(job: models.Job, selection: dict) -> tuple[float, float]:
++    custom_range = selection.get("customRange")
++    if custom_range and len(custom_range) == 2:
++        return float(custom_range[0]), float(custom_range[1])
++
++    highlight_id = selection.get("highlightId")
++    if highlight_id and job.highlights:
++        for h in job.highlights:
++            if h.get("id") == highlight_id:
++                return float(h["startTime"]), float(h["endTime"])
++
++    if job.custom_clip_range and len(job.custom_clip_range) == 2:
++        return float(job.custom_clip_range[0]), float(job.custom_clip_range[1])
++
++    return 0.0, min(30.0, job.duration_seconds or 30.0)
++
++
++def start_render(db: Session, job: models.Job, selection: dict, style_config: dict) -> None:
++    if job.status not in ("awaiting_selection", "done", "failed"):
++        raise HTTPException(
++            status_code=status.HTTP_409_CONFLICT,
++            detail=f"Job is not ready to render (status={job.status}).",
++        )
++
++    job.style_config = style_config
++    job.status = "rendering"
++    job.progress_percent = 70
++    db.commit()
++    add_log(db, job.id, "FFmpeg", "info", "Render queued")
++
++    thread = threading.Thread(
++        target=_run_render_pipeline, args=(job.id, selection, style_config), daemon=True
++    )
++    thread.start()
++
++
++def _run_render_pipeline(job_id: str, selection: dict, style_config: dict) -> None:
++    db = SessionLocal()
++    ass_path = str(TMP_DIR / f"{job_id}_{uuid.uuid4().hex[:8]}.ass")
++    try:
++        job = db.get(models.Job, job_id)
++        if not job:
++            return
++
++        start, end = _resolve_clip_range(job, selection)
++        aspect_ratio = style_config.get("aspectRatio", "9:16")
++        width, height = render_service.ASPECT_DIMENSIONS.get(
++            aspect_ratio, render_service.ASPECT_DIMENSIONS["9:16"]
++        )
++
++        add_log(db, job_id, "FFmpeg", "info", "Generating burned-in captions…")
++        render_service.build_ass_captions(
++            job.words or [], start, end, style_config, width, height, ass_path
++        )
++
++        output_filename = f"{job.id}.mp4"
++        output_path = OUTPUTS_DIR / output_filename
++
++        add_log(db, job_id, "FFmpeg", "info", f"Rendering {aspect_ratio} clip ({end - start:.1f}s)…")
++        render_service.render_clip(job.source_file_path, str(output_path), start, end, aspect_ratio, ass_path)
++
++        job.rendered_video_path = str(output_path)
++        job.rendered_video_url = f"/media/outputs/{output_filename}"
++        job.download_url = job.rendered_video_url
++        job.status = "done"
++        job.current_step = 7
++        job.progress_percent = 100
++        job.completed_at = datetime.now(timezone.utc)
++        db.commit()
++        add_log(db, job_id, "FFmpeg", "success", "Render complete")
++    except Exception as e:  # noqa: BLE001
++        job = db.get(models.Job, job_id)
++        if job:
++            job.status = "failed"
++            job.error_message = str(e)
++            db.commit()
++        add_log(db, job_id, "FFmpeg", "error", f"Render failed: {e}")
++    finally:
++        db.close()
++        Path(ass_path).unlink(missing_ok=True)
+diff --git a/backend/app/services/openai_service.py b/backend/app/services/openai_service.py
+new file mode 100644
+index 0000000..2262da6
+--- /dev/null
++++ b/backend/app/services/openai_service.py
+@@ -0,0 +1,147 @@
++"""
++OpenAI-only AI layer: Whisper transcription (with word timestamps) and
++GPT-4o-mini highlight/virality scoring. No other model provider is called
++anywhere in this backend.
++"""
++import json
++import uuid
++
++from openai import OpenAI
++
++from ..config import settings
++
++_client: OpenAI | None = None
++
++
++def _get_client() -> OpenAI:
++    global _client
++    if _client is None:
++        _client = OpenAI(api_key=settings.OPENAI_API_KEY)
++    return _client
++
++
++def transcribe_audio(audio_path: str) -> dict:
++    """
++    Calls Whisper (whisper-1) with word-level timestamps.
++    Returns {"text": str, "words": [{"word","start","end"}...]}.
++    """
++    client = _get_client()
++    with open(audio_path, "rb") as f:
++        result = client.audio.transcriptions.create(
++            model=settings.WHISPER_MODEL,
++            file=f,
++            response_format="verbose_json",
++            timestamp_granularities=["word"],
++        )
++
++    data = result.model_dump() if hasattr(result, "model_dump") else json.loads(result.json())
++    words = [
++        {
++            "word": w.get("word", "").strip(),
++            "start": float(w.get("start", 0.0)),
++            "end": float(w.get("end", 0.0)),
++        }
++        for w in data.get("words", [])
++        if w.get("word")
++    ]
++    return {"text": data.get("text", ""), "words": words}
++
++
++HIGHLIGHT_SYSTEM_PROMPT = """You are an expert short-form video editor who finds the most \
++"viral-worthy" moments in long-form podcast/webinar transcripts for vertical clips \
++(TikTok/Reels/Shorts). Given a transcript with timestamps, identify the strongest \
++self-contained highlight segments.
++
++Respond with ONLY a JSON object of the shape:
++{"highlights": [
++  {
++    "title": "short punchy title",
++    "category": "one or two words, e.g. 'Hot Take', 'Story', 'Advice', 'Controversial'",
++    "startTime": <seconds, number>,
++    "endTime": <seconds, number>,
++    "hook": "the exact opening line/hook that grabs attention",
++    "summary": "1-2 sentence summary of the moment",
++    "score": <0-100 overall virality score>,
++    "hookStrength": <0-100>,
++    "pacingScore": <0-100>
++  }
++]}
++
++Rules:
++- Each highlight should be 20-90 seconds long.
++- Pick 3-6 non-overlapping highlights, ordered by score descending.
++- Timestamps must fall within the transcript's actual time range.
++- Do not include any text outside the JSON object.
++"""
++
++
++def analyze_highlights(transcript_text: str, words: list[dict], duration_seconds: float) -> list[dict]:
++    """
++    Calls GPT-4o-mini to score highlight-worthy moments. Falls back to a single
++    naive highlight spanning the middle of the video if the model call fails
++    or returns something we can't parse, so the pipeline never gets stuck.
++    """
++    client = _get_client()
++
++    # Keep the prompt small: word list with timestamps, sampled if huge.
++    compact_words = words[:4000]
++    transcript_payload = {
++        "duration_seconds": duration_seconds,
++        "transcript_text": transcript_text[:12000],
++        "words": compact_words,
++    }
++
++    try:
++        resp = client.chat.completions.create(
++            model=settings.HIGHLIGHT_MODEL,
++            response_format={"type": "json_object"},
++            messages=[
++                {"role": "system", "content": HIGHLIGHT_SYSTEM_PROMPT},
++                {"role": "user", "content": json.dumps(transcript_payload)},
++            ],
++            temperature=0.4,
++        )
++        content = resp.choices[0].message.content
++        parsed = json.loads(content)
++        raw_highlights = parsed.get("highlights", [])
++        if not raw_highlights:
++            raise ValueError("empty highlights")
++    except Exception:
++        mid = max(0.0, duration_seconds / 2 - 30)
++        raw_highlights = [
++            {
++                "title": "Key moment",
++                "category": "Highlight",
++                "startTime": mid,
++                "endTime": min(duration_seconds, mid + 60),
++                "hook": transcript_text[:80] or "Highlight",
++                "summary": "Automatically selected midpoint segment (AI scoring unavailable).",
++                "score": 50,
++                "hookStrength": 50,
++                "pacingScore": 50,
++            }
++        ]
++
++    highlights = []
++    for h in raw_highlights:
++        start = max(0.0, float(h.get("startTime", 0)))
++        end = max(start + 1.0, float(h.get("endTime", start + 30)))
++        end = min(end, duration_seconds) if duration_seconds else end
++        highlights.append(
++            {
++                "id": f"hl_{uuid.uuid4().hex[:12]}",
++                "title": h.get("title", "Highlight"),
++                "category": h.get("category", "Highlight"),
++                "startTime": start,
++                "endTime": end,
++                "duration": round(end - start, 2),
++                "score": float(h.get("score", 50)),
++                "hook": h.get("hook", ""),
++                "summary": h.get("summary", ""),
++                "hookStrength": float(h.get("hookStrength", h.get("score", 50))),
++                "pacingScore": float(h.get("pacingScore", h.get("score", 50))),
++            }
++        )
++
++    highlights.sort(key=lambda h: h["score"], reverse=True)
++    return highlights
+diff --git a/backend/app/services/render_service.py b/backend/app/services/render_service.py
+new file mode 100644
+index 0000000..3dcc6bb
+--- /dev/null
++++ b/backend/app/services/render_service.py
+@@ -0,0 +1,236 @@
++"""
++ffmpeg/ffprobe pipeline: probe uploaded media, extract a small audio track for
++Whisper, generate burned-in ASS captions, and render the final vertical/square/
++horizontal clip.
++
++Framing note (see README §6, item 7): all framing modes currently resolve to
++the same "cover + center-crop" behavior. Real speaker-tracking ("smart_speaker")
++needs a face/motion-detection pass before the crop filter — that's future work,
++not implemented here.
++"""
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++from ..config import TMP_DIR
++
++ASPECT_DIMENSIONS = {
++    "9:16": (1080, 1920),
++    "1:1": (1080, 1080),
++    "16:9": (1920, 1080),
++}
++
++FONT_FAMILY_MAP = {
++    "display": "Arial Black",
++    "sans": "Arial",
++    "mono": "Consolas",
++    "headline": "Impact",
++}
++
++FONT_SIZE_MAP = {
++    "sm": 46,
++    "md": 60,
++    "lg": 78,
++    "xl": 96,
++}
++
++# ASS numpad alignment: 8 = top-center, 5 = middle-center, 2 = bottom-center
++POSITION_ALIGN_MAP = {"top": 8, "middle": 5, "bottom": 2}
++
++
++class FFmpegError(RuntimeError):
++    pass
++
++
++def _run(cmd: list[str]) -> str:
++    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
++    if proc.returncode != 0:
++        raise FFmpegError(proc.stderr[-4000:] if proc.stderr else f"Command failed: {' '.join(cmd)}")
++    return proc.stdout
++
++
++def ensure_ffmpeg_available() -> None:
++    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
++        raise FFmpegError("ffmpeg/ffprobe not found on PATH. Install ffmpeg on this host.")
++
++
++def probe(path: str) -> dict:
++    """Returns {duration_seconds, resolution, fps}."""
++    ensure_ffmpeg_available()
++    out = _run(
++        [
++            "ffprobe",
++            "-v",
++            "error",
++            "-select_streams",
++            "v:0",
++            "-show_entries",
++            "stream=width,height,r_frame_rate",
++            "-show_entries",
++            "format=duration",
++            "-of",
++            "json",
++            path,
++        ]
++    )
++    data = json.loads(out)
++    fmt = data.get("format", {})
++    streams = data.get("streams", [])
++    duration = float(fmt.get("duration", 0.0) or 0.0)
++
++    resolution, fps = None, None
++    if streams:
++        s = streams[0]
++        width, height = s.get("width"), s.get("height")
++        if width and height:
++            resolution = f"{width}x{height}"
++        rate = s.get("r_frame_rate")  # e.g. "30000/1001"
++        if rate and "/" in rate:
++            num, den = rate.split("/")
++            try:
++                fps = round(float(num) / float(den), 2) if float(den) else None
++            except ZeroDivisionError:
++                fps = None
++
++    return {"duration_seconds": duration, "resolution": resolution, "fps": fps}
++
++
++def extract_audio(video_path: str, out_path: str) -> str:
++    """Extracts a small mono 16kHz mp3 track so Whisper stays under its 25MB limit."""
++    ensure_ffmpeg_available()
++    _run(
++        [
++            "ffmpeg",
++            "-y",
++            "-i",
++            video_path,
++            "-vn",
++            "-ac",
++            "1",
++            "-ar",
++            "16000",
++            "-b:a",
++            "64k",
++            out_path,
++        ]
++    )
++    return out_path
++
++
++def _hex_to_ass_color(hex_color: str) -> str:
++    hex_color = (hex_color or "#FFFFFF").lstrip("#")
++    if len(hex_color) != 6:
++        hex_color = "FFFFFF"
++    r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
++    return f"&H00{b}{g}{r}".upper()  # ASS wants &HAABBGGRR (alpha 00 = opaque)
++
++
++def build_ass_captions(
++    words: list[dict],
++    clip_start: float,
++    clip_end: float,
++    style: dict,
++    video_width: int,
++    video_height: int,
++    out_path: str,
++) -> str:
++    """
++    Builds a burned-in caption track: one short caption burst per word (or small
++    group), styled per the job's StyleConfig (font, size, color, position).
++    """
++    font_name = FONT_FAMILY_MAP.get(style.get("fontFamily"), "Arial Black")
++    base_size = style.get("customFontSizePx") or FONT_SIZE_MAP.get(style.get("fontSize"), 72)
++    # Scale font relative to a 1080-wide reference so it looks right at any output size.
++    font_size = max(18, round(base_size * (video_width / 1080)))
++    align = POSITION_ALIGN_MAP.get(style.get("position"), 2)
++    primary = _hex_to_ass_color(style.get("textColor", "#FFFFFF"))
++    highlight = _hex_to_ass_color(style.get("highlightColor", "#00FF85"))
++    margin_v = round(video_height * 0.12)
++
++    header = f"""[Script Info]
++ScriptType: v4.00+
++PlayResX: {video_width}
++PlayResY: {video_height}
++WrapStyle: 0
++ScaledBorderAndShadow: yes
++
++[V4+ Styles]
++Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
++Style: Caption,{font_name},{font_size},{primary},{primary},&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,{align},60,60,{margin_v},1
++
++[Events]
++Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
++"""
++
++    def fmt_ts(t: float) -> str:
++        t = max(0.0, t)
++        h = int(t // 3600)
++        m = int((t % 3600) // 60)
++        s = t % 60
++        return f"{h:d}:{m:02d}:{s:05.2f}"
++
++    relevant = [w for w in words if w["end"] > clip_start and w["start"] < clip_end]
++
++    lines = []
++    for w in relevant:
++        start = max(0.0, w["start"] - clip_start)
++        end = max(start + 0.05, min(w["end"], clip_end) - clip_start)
++        text = w["word"].strip().upper()
++        if not text:
++            continue
++        styled_text = f"{{\\c{highlight}}}{text}{{\\c{primary}}}"
++        lines.append(f"Dialogue: 0,{fmt_ts(start)},{fmt_ts(end)},Caption,,0,0,0,,{styled_text}")
++
++    Path(out_path).write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
++    return out_path
++
++
++def render_clip(
++    input_path: str,
++    output_path: str,
++    clip_start: float,
++    clip_end: float,
++    aspect_ratio: str,
++    ass_path: str | None,
++) -> None:
++    ensure_ffmpeg_available()
++    width, height = ASPECT_DIMENSIONS.get(aspect_ratio, ASPECT_DIMENSIONS["9:16"])
++    duration = max(0.5, clip_end - clip_start)
++
++    vf_parts = [
++        f"scale=w={width}:h={height}:force_original_aspect_ratio=increase",
++        f"crop={width}:{height}",
++    ]
++    if ass_path:
++        # ffmpeg filter paths need escaping on Windows-style separators/colons;
++        # on POSIX this is just the raw path.
++        escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:")
++        vf_parts.append(f"ass='{escaped}'")
++
++    cmd = [
++        "ffmpeg",
++        "-y",
++        "-ss",
++        f"{clip_start}",
++        "-i",
++        input_path,
++        "-t",
++        f"{duration}",
++        "-vf",
++        ",".join(vf_parts),
++        "-c:v",
++        "libx264",
++        "-preset",
++        "veryfast",
++        "-crf",
++        "20",
++        "-c:a",
++        "aac",
++        "-b:a",
++        "128k",
++        "-movflags",
++        "+faststart",
++        output_path,
++    ]
++    _run(cmd)
+diff --git a/backend/db/schema_auth.sql b/backend/db/schema_auth.sql
+new file mode 100644
+index 0000000..a238cde
+--- /dev/null
++++ b/backend/db/schema_auth.sql
+@@ -0,0 +1,33 @@
++-- Reference only: the FastAPI app auto-creates these tables at startup via
++-- SQLAlchemy's Base.metadata.create_all() (see app/main.py). This file exists
++-- so the schema is easy to read/diff, and as a starting point if you switch
++-- to Alembic migrations later. Running it by hand is optional.
++
++CREATE TABLE IF NOT EXISTS users (
++    id              VARCHAR(48) PRIMARY KEY,
++    email           VARCHAR(320) UNIQUE NOT NULL,
++    name            VARCHAR(255) NOT NULL DEFAULT '',
++    profile_image   TEXT,
++    plan            VARCHAR(20) NOT NULL DEFAULT 'starter',
++    credits_remaining INTEGER NOT NULL DEFAULT 100,
++    credits_total   INTEGER NOT NULL DEFAULT 100,
++    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++
++CREATE TABLE IF NOT EXISTS auth_identities (
++    id                  VARCHAR(48) PRIMARY KEY,
++    user_id             VARCHAR(48) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    provider            VARCHAR(30) NOT NULL,
++    provider_user_id    VARCHAR(255) NOT NULL,
++    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++CREATE INDEX IF NOT EXISTS idx_auth_identities_user_id ON auth_identities(user_id);
++
++CREATE TABLE IF NOT EXISTS sessions (
++    id          VARCHAR(48) PRIMARY KEY,
++    user_id     VARCHAR(48) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
++    expires_at  TIMESTAMPTZ NOT NULL,
++    revoked_at  TIMESTAMPTZ
++);
++CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+diff --git a/backend/db/schema_clipper.sql b/backend/db/schema_clipper.sql
+new file mode 100644
+index 0000000..f7b1539
+--- /dev/null
++++ b/backend/db/schema_clipper.sql
+@@ -0,0 +1,48 @@
++-- Reference only: see note at the top of schema_auth.sql.
++
++CREATE TABLE IF NOT EXISTS jobs (
++    id                      VARCHAR(48) PRIMARY KEY,
++    user_id                 VARCHAR(48) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++
++    title                   VARCHAR(255) NOT NULL DEFAULT 'Untitled clip',
++    source_type             VARCHAR(20) NOT NULL DEFAULT 'upload',
++    source_url              TEXT,
++    source_file_name        VARCHAR(500),
++    source_file_path        TEXT,
++
++    file_size_mb            DOUBLE PRECISION NOT NULL DEFAULT 0,
++    duration_seconds        DOUBLE PRECISION NOT NULL DEFAULT 0,
++    resolution              VARCHAR(20),
++    fps                     DOUBLE PRECISION,
++    thumbnail_url           TEXT NOT NULL DEFAULT '',
++
++    status                  VARCHAR(30) NOT NULL DEFAULT 'queued',
++    current_step            INTEGER NOT NULL DEFAULT 1,
++    progress_percent        INTEGER NOT NULL DEFAULT 0,
++    error_message           TEXT,
++
++    transcript_text         TEXT,
++    words                   JSONB,
++    highlights              JSONB,
++    selected_highlight_id   VARCHAR(64),
++    custom_clip_range       JSONB,
++    style_config            JSONB,
++
++    rendered_video_path     TEXT,
++    rendered_video_url      TEXT,
++    download_url            TEXT,
++
++    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
++    completed_at            TIMESTAMPTZ
++);
++CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
++
++CREATE TABLE IF NOT EXISTS job_logs (
++    id          VARCHAR(48) PRIMARY KEY,
++    job_id      VARCHAR(48) NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
++    service     VARCHAR(60) NOT NULL DEFAULT 'pipeline',
++    level       VARCHAR(10) NOT NULL DEFAULT 'info',
++    message     TEXT NOT NULL DEFAULT '',
++    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+new file mode 100644
+index 0000000..83f1720
+--- /dev/null
++++ b/backend/requirements.txt
+@@ -0,0 +1,12 @@
++fastapi==0.115.0
++uvicorn[standard]==0.30.6
++gunicorn==22.0.0
++SQLAlchemy==2.0.35
++psycopg2-binary==2.9.9
++pydantic==2.9.2
++pydantic-settings==2.5.2
++python-multipart==0.0.9
++python-jose[cryptography]==3.3.0
++httpx==0.27.2
++openai==1.51.0
++python-dotenv==1.0.1
+diff --git a/backend/run.py b/backend/run.py
+new file mode 100644
+index 0000000..ec8462d
+--- /dev/null
++++ b/backend/run.py
+@@ -0,0 +1,6 @@
++"""Local dev convenience: `python run.py` starts uvicorn with autoreload.
++In production the Dockerfile runs `gunicorn -k uvicorn.workers.UvicornWorker app.main:app` instead."""
++import uvicorn
++
++if __name__ == "__main__":
++    uvicorn.run("app.main:app", host="127.0.0.1", port=5000, reload=True)
+diff --git a/backend/static/outputs/.gitkeep b/backend/static/outputs/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/static/tmp/.gitkeep b/backend/static/tmp/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/static/uploads/.gitkeep b/backend/static/uploads/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+index 0000000..972cfa7
+--- /dev/null
++++ b/docker-compose.yml
+@@ -0,0 +1,37 @@
++services:
++  db:
++    image: postgres:16-alpine
++    restart: unless-stopped
++    environment:
++      POSTGRES_USER: postgres
++      POSTGRES_PASSWORD: postgres
++      POSTGRES_DB: manweta_clipper
++    ports:
++      - "5432:5432"
++    volumes:
++      - clipper-db-data:/var/lib/postgresql/data
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U postgres"]
++      interval: 5s
++      timeout: 5s
++      retries: 10
++
++  backend:
++    build: .
++    restart: unless-stopped
++    env_file: .env
++    environment:
++      DATABASE_URL: postgresql://postgres:postgres@db:5432/manweta_clipper
++    ports:
++      - "5000:5000"
++    depends_on:
++      db:
++        condition: service_healthy
++    volumes:
++      - clipper-uploads:/srv/backend/static/uploads
++      - clipper-outputs:/srv/backend/static/outputs
++
++volumes:
++  clipper-db-data:
++  clipper-uploads:
++  clipper-outputs:
+diff --git a/vite.config.ts b/vite.config.ts
+index 68b5aa7..de29c91 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -73,9 +73,18 @@ function apiMockPlugin(): Plugin {
+   };
+ }
+ 
+-export default defineConfig(() => {
++export default defineConfig(({ mode }) => {
++  const env = { ...process.env, ...loadEnvVars(mode) };
++  const backendUrl = env.VITE_API_URL || 'http://127.0.0.1:5000';
++  const useMockFallback = env.VITE_ENABLE_MOCK_FALLBACK === 'true';
++
+   return {
+-    plugins: [react(), tailwindcss(), apiMockPlugin()],
++    // By default, dev-server requests to /auth, /api, and /media are proxied
++    // to the real FastAPI backend (see backend/README or root README §4,
++    // Option B) so real Google OAuth / Whisper / GPT / ffmpeg runs end-to-end.
++    // Set VITE_ENABLE_MOCK_FALLBACK=true to use in-browser mock responses
++    // instead (no backend required) for pure UI iteration.
++    plugins: [react(), tailwindcss(), ...(useMockFallback ? [apiMockPlugin()] : [])],
+     resolve: {
+       alias: {
+         '@': path.resolve(__dirname, '.'),
+@@ -87,6 +96,20 @@ export default defineConfig(() => {
+       allowedHosts: true as const,
+       hmr: process.env.DISABLE_HMR !== 'true',
+       watch: process.env.DISABLE_HMR === 'true' ? null : {},
++      proxy: useMockFallback
++        ? undefined
++        : {
++            '/auth': { target: backendUrl, changeOrigin: true },
++            '/api': { target: backendUrl, changeOrigin: true },
++            '/media': { target: backendUrl, changeOrigin: true },
++          },
+     },
+   };
+ });
++
++function loadEnvVars(_mode: string): Record<string, string | undefined> {
++  // Vite's own `loadEnv` covers .env files; process.env already picks up
++  // shell-exported vars, which is sufficient here since we only read
++  // VITE_API_URL / VITE_ENABLE_MOCK_FALLBACK.
++  return {};
++}

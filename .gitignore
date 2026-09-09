@@ -4,9 +4,9 @@
 !.env.example
 
 # Node
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
+node_modules/
+dist/
+.vite/
 
 # Python
 backend/venv/
